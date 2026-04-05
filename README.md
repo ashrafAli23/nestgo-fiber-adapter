@@ -1,0 +1,232 @@
+<p align="center">
+  <h1 align="center">NestGo Fiber Adapter</h1>
+  <p align="center">Fiber v3 adapter for the NestGo framework.</p>
+</p>
+
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/ashrafAli23/nestgo-fiber-adapter"><img src="https://pkg.go.dev/badge/github.com/ashrafAli23/nestgo-fiber-adapter.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/ashrafAli23/nestgo-fiber-adapter"><img src="https://goreportcard.com/badge/github.com/ashrafAli23/nestgo-fiber-adapter" alt="Go Report Card"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+</p>
+
+---
+
+This package implements NestGo's `core.Server`, `core.Router`, and `core.Context` interfaces on top of [Fiber v3](https://gofiber.io), letting you use NestGo's Guards, Interceptors, Pipes, and Middleware ecosystem with Fiber's high-performance HTTP engine.
+
+## Install
+
+```bash
+go get github.com/ashrafAli23/nestgo-fiber-adapter
+```
+
+**Prerequisites:**
+
+```bash
+go get github.com/ashrafAli23/nestgo          # core framework
+go get github.com/gofiber/fiber/v3            # fiber v3
+```
+
+## Quick Start
+
+```go
+package main
+
+import (
+    "github.com/ashrafAli23/nestgo/core"
+    fiber "github.com/ashrafAli23/nestgo-fiber-adapter"
+    "github.com/ashrafAli23/nestgo/middleware"
+)
+
+func main() {
+    server := fiber.New(core.DefaultConfig())
+
+    // NestGo middleware works out of the box
+    server.Use(middleware.Recovery())
+    server.Use(middleware.CORS())
+    server.Use(middleware.RequestID())
+
+    server.GET("/hello", func(c core.Context) error {
+        return c.JSON(200, map[string]string{"message": "Hello from Fiber!"})
+    })
+
+    server.Start(":3000")
+}
+```
+
+## Swapping from Gin
+
+NestGo's adapter pattern means switching from Gin to Fiber is a one-line change:
+
+```diff
+  import (
+      "github.com/ashrafAli23/nestgo/core"
+-     adapter "github.com/ashrafAli23/nestgo-gin-adapter"
++     adapter "github.com/ashrafAli23/nestgo-fiber-adapter"
+  )
+
+  func main() {
+      server := adapter.New(core.DefaultConfig())
+      // ... all handlers, middleware, guards, etc. remain identical
+  }
+```
+
+## Features
+
+### Context Pooling
+
+Fiber recycles its context after each request. This adapter mirrors that with `sync.Pool`-based context pooling, achieving **zero allocation per request** for context structs.
+
+### Use-After-Release Protection
+
+Every `FiberContext` method checks an `atomic.Bool` released flag (~1ns overhead). If you accidentally use a context after the handler returns, you get a clear panic message instead of silent data corruption:
+
+```
+[NestGo] use-after-release: FiberContext used after handler returned.
+Fiber contexts are pooled and recycled. Use c.Clone() before passing to goroutines.
+```
+
+### Safe Goroutine Usage with Clone
+
+Fiber contexts are NOT safe to use after the handler returns. Use `Clone()` to create a read-only snapshot:
+
+```go
+server.GET("/async", func(c core.Context) error {
+    snapshot := c.Clone()
+    go func() {
+        defer fiberadapter.ReleaseSnapshot(snapshot) // optional, reduces GC pressure
+        ip := snapshot.ClientIP()                     // safe
+        method := snapshot.Method()                   // safe
+        _ = ip
+        _ = method
+    }()
+    return c.JSON(202, map[string]string{"status": "accepted"})
+})
+```
+
+`Clone()` returns a `FiberContextSnapshot` containing copied:
+- HTTP method, path, IP, full URL
+- Request body (deep copy)
+- Headers, query params, route params (map copies)
+- Locals (independent map)
+
+Snapshots are pooled. Call `ReleaseSnapshot()` when done for maximum performance.
+
+### Route Groups
+
+```go
+api := server.Group("/api/v1")
+api.GET("/users", listUsers)
+api.POST("/users", createUser)
+
+// Nested groups with middleware
+admin := api.Group("/admin", middleware.RateLimit(middleware.RateLimitConfig{
+    Max:    10,
+    Window: time.Minute,
+}))
+admin.DELETE("/users/:id", deleteUser)
+```
+
+### Accessing Raw Fiber APIs
+
+For Fiber-specific features not covered by NestGo's abstractions:
+
+```go
+// Access the *fiber.App
+app := server.Underlying().(*fiber.App)
+app.Static("/public", "./static")
+
+// Access fiber.Ctx inside a handler
+server.GET("/raw", func(c core.Context) error {
+    fc := c.Underlying().(fiber.Ctx)
+    // Use Fiber-specific APIs directly
+    return c.JSON(200, nil)
+})
+```
+
+### Graceful Shutdown
+
+```go
+go func() {
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    <-quit
+
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+    server.Shutdown(ctx)
+}()
+
+server.Start(":3000")
+```
+
+## Configuration
+
+Pass a `*core.Config` to `New()`:
+
+```go
+server := fiber.New(&core.Config{
+    AppName:      "my-api",
+    Addr:         ":8080",
+    ReadTimeout:  30,           // seconds
+    WriteTimeout: 30,           // seconds
+    BodyLimit:    10 * 1024 * 1024, // 10MB
+    ErrorHandler: customErrorHandler,
+})
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `AppName` | `string` | `""` | Application name (shown in Fiber's app info) |
+| `Addr` | `string` | `":3000"` | Default listen address |
+| `ReadTimeout` | `int` | `0` | Read timeout in seconds |
+| `WriteTimeout` | `int` | `0` | Write timeout in seconds |
+| `BodyLimit` | `int` | `0` | Max request body size in bytes |
+| `ErrorHandler` | `core.ErrorHandler` | `nil` | Custom error handler (defaults to `core.DefaultErrorHandler`) |
+
+## Performance
+
+This adapter is optimized for production workloads:
+
+| Optimization | Technique | Impact |
+|-------------|-----------|--------|
+| Context pooling | `sync.Pool` | Zero alloc per request |
+| Release detection | `atomic.Bool` | ~1ns per method call |
+| Snapshot pooling | `sync.Pool` + map reuse | Reduced GC on `Clone()` |
+| Header/query iteration | Go 1.23 `iter.Seq2` | No deprecated `VisitAll` |
+| Map reuse in snapshots | `clear()` instead of `make()` | Zero map alloc from pool |
+
+## Compatibility
+
+| Dependency | Version |
+|-----------|---------|
+| Go | 1.23+ |
+| Fiber | v3.x |
+| NestGo Core | v1.x |
+
+## API Reference
+
+Full documentation is available on [pkg.go.dev](https://pkg.go.dev/github.com/ashrafAli23/nestgo-fiber-adapter).
+
+### Exported Types
+
+- **`FiberServer`** — implements `core.Server`. Created via `New()`.
+- **`FiberRouter`** — implements `core.Router`. Created via `Group()`.
+- **`FiberContext`** — implements `core.Context`. Wraps `fiber.Ctx`.
+- **`FiberContextSnapshot`** — implements `core.Context` (read-only). Created via `Clone()`.
+
+### Exported Functions
+
+- **`New(config *core.Config) core.Server`** — creates a new Fiber-backed server.
+- **`ReleaseSnapshot(c core.Context)`** — returns a snapshot to the pool for reuse.
+
+## Related Packages
+
+| Package | Description |
+|---------|-------------|
+| [nestgo](https://github.com/ashrafAli23/nestgo) | Core framework (interfaces, middleware, DI) |
+| [nestgo-gin-adapter](https://github.com/ashrafAli23/nestgo-gin-adapter) | Gin adapter |
+| [nestgo-validator](https://github.com/ashrafAli23/nestgo-validator) | Validation & transformation |
+
+## License
+
+[MIT](LICENSE)
