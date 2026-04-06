@@ -1,6 +1,7 @@
 package fiberadapter
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -124,10 +125,24 @@ func (c *FiberContext) SendStream(stream io.Reader) error {
 	return c.fiberCtx.SendStream(stream)
 }
 
+func (c *FiberContext) SendFile(filePath string) error {
+	c.checkReleased()
+	return c.fiberCtx.SendFile(filePath)
+}
+
+func (c *FiberContext) Download(filePath string, filename string) error {
+	c.checkReleased()
+	return c.fiberCtx.Download(filePath, filename)
+}
+
 func (c *FiberContext) NoContent(status int) error {
 	c.checkReleased()
 	c.fiberCtx.Status(status)
 	return nil
+}
+func (c *FiberContext) ResponseStatus() int {
+	c.checkReleased()
+	return c.fiberCtx.Response().StatusCode()
 }
 func (c *FiberContext) SetHeader(k, v string) { c.checkReleased(); c.fiberCtx.Set(k, v) }
 
@@ -176,11 +191,22 @@ func (c *FiberContext) Get(key string) (interface{}, bool) {
 func (c *FiberContext) Next() error             { c.checkReleased(); return c.fiberCtx.Next() }
 func (c *FiberContext) Underlying() interface{} { c.checkReleased(); return c.fiberCtx }
 
+func (c *FiberContext) RequestCtx() context.Context {
+	c.checkReleased()
+	return c.fiberCtx.Context()
+}
+
+func (c *FiberContext) SetRequestCtx(ctx context.Context) {
+	c.checkReleased()
+	c.fiberCtx.SetContext(ctx)
+}
+
 // Clone returns a snapshot of the FiberContext that is safe to use in goroutines.
 // Fiber's context is NOT safe to use after the handler returns, so we copy
 // the essential request data into a standalone struct.
 func (c *FiberContext) Clone() core.Context {
 	s := acquireSnapshot()
+	s.stdCtx = context.WithoutCancel(c.fiberCtx.Context())
 	s.method = c.fiberCtx.Method()
 	s.path = c.fiberCtx.Route().Path
 	s.ip = c.fiberCtx.IP()

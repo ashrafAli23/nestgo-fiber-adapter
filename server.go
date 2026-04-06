@@ -7,6 +7,7 @@ import (
 
 	core "github.com/ashrafAli23/nestgo/core"
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/static"
 )
 
 // Compile-time checks
@@ -115,6 +116,14 @@ func (s *FiberServer) Use(mw ...core.MiddlewareFunc) {
 	s.router.Use(mw...)
 }
 
+func (s *FiberServer) Static(path string, root string, mw ...core.MiddlewareFunc) {
+	s.router.Static(path, root, mw...)
+}
+
+func (s *FiberServer) StaticFile(path string, filePath string, mw ...core.MiddlewareFunc) {
+	s.router.StaticFile(path, filePath, mw...)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // FiberRouter — implements core.Router
 // ═══════════════════════════════════════════════════════════════════════════
@@ -182,5 +191,35 @@ func (r *FiberRouter) Group(prefix string, mw ...core.MiddlewareFunc) core.Route
 func (r *FiberRouter) Use(mw ...core.MiddlewareFunc) {
 	for _, m := range mw {
 		r.router.Use(wrapMiddleware(m, r.errHandler))
+	}
+}
+
+func (r *FiberRouter) Static(path string, root string, mw ...core.MiddlewareFunc) {
+	if len(mw) > 0 {
+		args := make([]any, 0, len(mw)+2)
+		args = append(args, path)
+		for _, m := range mw {
+			args = append(args, wrapMiddleware(m, r.errHandler))
+		}
+		args = append(args, static.New(root))
+		r.router.Use(args...)
+	} else {
+		r.router.Use(path, static.New(root))
+	}
+}
+
+func (r *FiberRouter) StaticFile(path string, filePath string, mw ...core.MiddlewareFunc) {
+	sendFile := func(c fiber.Ctx) error {
+		return c.SendFile(filePath)
+	}
+
+	if len(mw) > 0 {
+		handlers := make([]any, 0, len(mw))
+		for _, m := range mw {
+			handlers = append(handlers, wrapMiddleware(m, r.errHandler))
+		}
+		r.router.Get(path, sendFile, handlers...)
+	} else {
+		r.router.Get(path, sendFile)
 	}
 }

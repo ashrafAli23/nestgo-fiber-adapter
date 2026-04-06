@@ -1,6 +1,7 @@
 package fiberadapter
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -58,6 +59,7 @@ type FiberContextSnapshot struct {
 	params  map[string]string
 	queries map[string]string
 	locals  map[string]interface{}
+	stdCtx  context.Context
 }
 
 // ─── Request (read from snapshot) ──────────────────────────────────────────
@@ -106,9 +108,16 @@ func (c *FiberContextSnapshot) SendBytes(status int, data []byte) error {
 func (c *FiberContextSnapshot) SendStream(stream io.Reader) error {
 	return core.ErrInternalServer("SendStream() not supported on cloned context")
 }
+func (c *FiberContextSnapshot) SendFile(filePath string) error {
+	return core.ErrInternalServer("SendFile() not supported on cloned context")
+}
+func (c *FiberContextSnapshot) Download(filePath string, filename string) error {
+	return core.ErrInternalServer("Download() not supported on cloned context")
+}
 func (c *FiberContextSnapshot) NoContent(status int) error {
 	return core.ErrInternalServer("NoContent() not supported on cloned context")
 }
+func (c *FiberContextSnapshot) ResponseStatus() int    { return 0 }
 func (c *FiberContextSnapshot) SetHeader(k, v string) {}
 func (c *FiberContextSnapshot) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
 }
@@ -139,6 +148,8 @@ func (c *FiberContextSnapshot) Get(key string) (interface{}, bool) {
 
 // ─── Flow Control ──────────────────────────────────────────────────────────
 
-func (c *FiberContextSnapshot) Next() error             { return nil }
-func (c *FiberContextSnapshot) Underlying() interface{} { return nil }
-func (c *FiberContextSnapshot) Clone() core.Context     { return c }
+func (c *FiberContextSnapshot) Next() error                 { return nil }
+func (c *FiberContextSnapshot) Underlying() interface{}     { return nil }
+func (c *FiberContextSnapshot) Clone() core.Context         { return c }
+func (c *FiberContextSnapshot) RequestCtx() context.Context { return c.stdCtx }
+func (c *FiberContextSnapshot) SetRequestCtx(ctx context.Context) { c.stdCtx = ctx }
