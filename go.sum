@@ -1,7 +1,7 @@
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
-github.com/ashrafAli23/nestgo v1.1.0 h1:q+e/Ght9WOYwIKr4NFFi2SoZTb6sNBZvhFvDY8isi+g=
-github.com/ashrafAli23/nestgo v1.1.0/go.mod h1:ChCVj8MRoxuiPUpztp6i0k6F9r1NEyw4qE6hxB/o0RE=
+github.com/ashrafAli23/nestgo v1.2.0 h1:2bOCWKyI/kqGzIil991TeXR2Mnx24C90yHQ8qJ87R+A=
+github.com/ashrafAli23/nestgo v1.2.0/go.mod h1:ChCVj8MRoxuiPUpztp6i0k6F9r1NEyw4qE6hxB/o0RE=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=

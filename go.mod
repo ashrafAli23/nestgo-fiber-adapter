@@ -3,7 +3,7 @@ module github.com/ashrafAli23/nestgo-fiber-adapter
 go 1.25.0
 
 require (
-	github.com/ashrafAli23/nestgo v1.1.0
+	github.com/ashrafAli23/nestgo v1.2.0
 	github.com/gofiber/fiber/v3 v3.1.0
 )
 

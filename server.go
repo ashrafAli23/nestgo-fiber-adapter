@@ -38,7 +38,9 @@ func New(config *core.Config) core.Server {
 	}
 
 	app := fiber.New(fiberConfig)
-
+	// if config.DisableLogger {
+	// 	app.Use(recover.New())
+	// }
 	server := &FiberServer{
 		app:    app,
 		config: config,
