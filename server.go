@@ -2,7 +2,6 @@ package fiberadapter
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	core "github.com/ashrafAli23/nestgo/core"
@@ -63,12 +62,28 @@ func (s *FiberServer) Start(addr string) error {
 		addr = s.config.Addr
 	}
 
-	fmt.Printf("[NestGo] Starting Fiber server on %s\n", addr)
-	return s.app.Listen(addr)
+	core.Log().Info("starting server", core.F("adapter", "fiber"), core.F("addr", addr))
+	return s.app.Listen(addr, fiber.ListenConfig{
+		EnablePrintRoutes:     s.config.Debug,
+		DisableStartupMessage: !s.config.Debug,
+	})
+}
+
+func (s *FiberServer) StartTLS(addr, certFile, keyFile string) error {
+	if addr == "" {
+		addr = s.config.Addr
+	}
+	core.Log().Info("starting TLS server", core.F("adapter", "fiber"), core.F("addr", addr))
+	return s.app.Listen(addr, fiber.ListenConfig{
+		CertFile:              certFile,
+		CertKeyFile:           keyFile,
+		EnablePrintRoutes:     s.config.Debug,
+		DisableStartupMessage: !s.config.Debug,
+	})
 }
 
 func (s *FiberServer) Shutdown(ctx context.Context) error {
-	fmt.Println("[NestGo] Shutting down Fiber server...")
+	core.Log().Info("shutting down server", core.F("adapter", "fiber"))
 	return s.app.ShutdownWithContext(ctx)
 }
 
@@ -108,6 +123,10 @@ func (s *FiberServer) OPTIONS(path string, handler core.HandlerFunc, mw ...core.
 
 func (s *FiberServer) HEAD(path string, handler core.HandlerFunc, mw ...core.MiddlewareFunc) {
 	s.router.HEAD(path, handler, mw...)
+}
+
+func (s *FiberServer) ANY(path string, handler core.HandlerFunc, mw ...core.MiddlewareFunc) {
+	s.router.ANY(path, handler, mw...)
 }
 
 func (s *FiberServer) Group(prefix string, mw ...core.MiddlewareFunc) core.Router {
@@ -172,6 +191,11 @@ func (r *FiberRouter) OPTIONS(path string, handler core.HandlerFunc, mw ...core.
 func (r *FiberRouter) HEAD(path string, handler core.HandlerFunc, mw ...core.MiddlewareFunc) {
 	finalHandler := applyRouteMiddleware(handler, mw)
 	r.router.Head(path, wrapHandler(finalHandler, r.errHandler))
+}
+
+func (r *FiberRouter) ANY(path string, handler core.HandlerFunc, mw ...core.MiddlewareFunc) {
+	finalHandler := applyRouteMiddleware(handler, mw)
+	r.router.All(path, wrapHandler(finalHandler, r.errHandler))
 }
 
 func (r *FiberRouter) Group(prefix string, mw ...core.MiddlewareFunc) core.Router {

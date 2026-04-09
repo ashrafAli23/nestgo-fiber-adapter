@@ -118,6 +118,7 @@ func (c *FiberContextSnapshot) NoContent(status int) error {
 	return core.ErrInternalServer("NoContent() not supported on cloned context")
 }
 func (c *FiberContextSnapshot) ResponseStatus() int    { return 0 }
+func (c *FiberContextSnapshot) ResponseBody() []byte   { return nil }
 func (c *FiberContextSnapshot) SetHeader(k, v string) {}
 func (c *FiberContextSnapshot) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
 }
@@ -141,9 +142,8 @@ func (c *FiberContextSnapshot) Set(key string, value interface{}) {
 	c.locals[key] = value
 }
 
-func (c *FiberContextSnapshot) Get(key string) (interface{}, bool) {
-	val, ok := c.locals[key]
-	return val, ok
+func (c *FiberContextSnapshot) Get(key string) interface{} {
+	return c.locals[key]
 }
 
 // ─── Flow Control ──────────────────────────────────────────────────────────

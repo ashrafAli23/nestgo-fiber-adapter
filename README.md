@@ -205,12 +205,14 @@ server := fiberadapter.New(&core.Config{
 
 | Field          | Type                | Default   | Description                                                   |
 | -------------- | ------------------- | --------- | ------------------------------------------------------------- |
-| `AppName`      | `string`            | `""`      | Application name (shown in Fiber's app info)                  |
-| `Addr`         | `string`            | `":3000"` | Default listen address                                        |
-| `ReadTimeout`  | `int`               | `0`       | Read timeout in seconds                                       |
-| `WriteTimeout` | `int`               | `0`       | Write timeout in seconds                                      |
-| `BodyLimit`    | `int`               | `0`       | Max request body size in bytes                                |
-| `ErrorHandler` | `core.ErrorHandler` | `nil`     | Custom error handler (defaults to `core.DefaultErrorHandler`) |
+| `AppName`       | `string`            | `""`      | Application name (shown in Fiber's app info)                  |
+| `Addr`          | `string`            | `":3000"` | Default listen address                                        |
+| `Debug`         | `bool`              | `false`   | Enable Fiber debug output and print routes during startup     |
+| `DisableLogger` | `bool`              | `false`   | Disables Fiber's built-in global logger middleware             |
+| `ReadTimeout`   | `int`               | `0`       | Read timeout in seconds                                       |
+| `WriteTimeout`  | `int`               | `0`       | Write timeout in seconds                                      |
+| `BodyLimit`     | `int`               | `0`       | Max request body size in bytes                                |
+| `ErrorHandler`  | `core.ErrorHandler` | `nil`     | Custom error handler (defaults to `core.DefaultErrorHandler`) |
 
 ## Performance
 

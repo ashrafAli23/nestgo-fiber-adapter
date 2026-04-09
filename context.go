@@ -144,6 +144,10 @@ func (c *FiberContext) ResponseStatus() int {
 	c.checkReleased()
 	return c.fiberCtx.Response().StatusCode()
 }
+func (c *FiberContext) ResponseBody() []byte {
+	c.checkReleased()
+	return c.fiberCtx.Response().Body()
+}
 func (c *FiberContext) SetHeader(k, v string) { c.checkReleased(); c.fiberCtx.Set(k, v) }
 
 func (c *FiberContext) SetCookie(name, value string, maxAge int, path, domain string, secure, httpOnly bool) {
@@ -177,13 +181,9 @@ func (c *FiberContext) Set(key string, value interface{}) {
 	c.fiberCtx.Locals(key, value)
 }
 
-func (c *FiberContext) Get(key string) (interface{}, bool) {
+func (c *FiberContext) Get(key string) interface{} {
 	c.checkReleased()
-	val := c.fiberCtx.Locals(key)
-	if val == nil {
-		return nil, false
-	}
-	return val, true
+	return c.fiberCtx.Locals(key)
 }
 
 // ─── Flow Control ───────────────────────────────────────────────────────────
