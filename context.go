@@ -271,21 +271,12 @@ func wrapHandler(handler core.HandlerFunc, errHandler core.ErrorHandler) fiber.H
 	}
 }
 
-func wrapMiddleware(mw core.MiddlewareFunc, errHandler core.ErrorHandler) fiber.Handler {
+func wrapMiddleware(mw core.MiddlewareFunc) fiber.Handler {
 	return func(fc fiber.Ctx) error {
 		ctx := acquireContext(fc)
 		defer releaseContext(ctx)
 		next := func(c core.Context) error { return fc.Next() }
-		handler := mw(next)
-		if err := handler(ctx); err != nil {
-			if errHandler != nil {
-				errHandler(ctx, err)
-			} else {
-				core.DefaultErrorHandler(ctx, err)
-			}
-			return nil
-		}
-		return nil
+		return mw(next)(ctx)
 	}
 }
 

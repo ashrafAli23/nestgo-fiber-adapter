@@ -2,7 +2,6 @@ package fiberadapter
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"sync"
@@ -133,7 +132,7 @@ func (c *FiberContextSnapshot) FullURL() string {
 	if c.fullURL != "" {
 		return c.fullURL
 	}
-	return fmt.Sprintf("%s", c.path)
+	return c.path
 }
 
 // ─── Context Storage ───────────────────────────────────────────────────────

@@ -34,6 +34,16 @@ func New(config *core.Config) core.Server {
 		ReadTimeout:  time.Duration(config.ReadTimeout) * time.Second,
 		WriteTimeout: time.Duration(config.WriteTimeout) * time.Second,
 		BodyLimit:    config.BodyLimit,
+		ErrorHandler: func(fc fiber.Ctx, err error) error {
+			ctx := acquireContext(fc)
+			defer releaseContext(ctx)
+			if config.ErrorHandler != nil {
+				config.ErrorHandler(ctx, err)
+			} else {
+				core.DefaultErrorHandler(ctx, err)
+			}
+			return nil
+		},
 	}
 
 	app := fiber.New(fiberConfig)
@@ -202,7 +212,7 @@ func (r *FiberRouter) Group(prefix string, mw ...core.MiddlewareFunc) core.Route
 	// Collect middleware handlers for the group.
 	handlers := make([]any, 0, len(mw))
 	for _, m := range mw {
-		handlers = append(handlers, wrapMiddleware(m, r.errHandler))
+		handlers = append(handlers, wrapMiddleware(m))
 	}
 
 	fiberGroup := r.router.Group(prefix, handlers...)
@@ -216,7 +226,7 @@ func (r *FiberRouter) Group(prefix string, mw ...core.MiddlewareFunc) core.Route
 
 func (r *FiberRouter) Use(mw ...core.MiddlewareFunc) {
 	for _, m := range mw {
-		r.router.Use(wrapMiddleware(m, r.errHandler))
+		r.router.Use(wrapMiddleware(m))
 	}
 }
 
@@ -225,7 +235,7 @@ func (r *FiberRouter) Static(path string, root string, mw ...core.MiddlewareFunc
 		args := make([]any, 0, len(mw)+2)
 		args = append(args, path)
 		for _, m := range mw {
-			args = append(args, wrapMiddleware(m, r.errHandler))
+			args = append(args, wrapMiddleware(m))
 		}
 		args = append(args, static.New(root))
 		r.router.Use(args...)
@@ -242,7 +252,7 @@ func (r *FiberRouter) StaticFile(path string, filePath string, mw ...core.Middle
 	if len(mw) > 0 {
 		handlers := make([]any, 0, len(mw))
 		for _, m := range mw {
-			handlers = append(handlers, wrapMiddleware(m, r.errHandler))
+			handlers = append(handlers, wrapMiddleware(m))
 		}
 		r.router.Get(path, sendFile, handlers...)
 	} else {
