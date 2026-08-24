@@ -2,6 +2,7 @@ package fiberadapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -472,11 +473,32 @@ func dispatchError(ctx *FiberContext, fc fiber.Ctx, err error, errHandler core.E
 			core.F("error", err.Error()))
 		return
 	}
+	// A *fiber.Error can reach here when a native fiber handler bridged into
+	// the chain by wrapMiddlewareChain (e.g. Static() with middleware) falls
+	// through via fc.Next() into fiber's own routing fallback (ErrNotFound /
+	// ErrMethodNotAllowed). Translate it so those keep fiber's HTTP semantics
+	// instead of being genericized into a 500 by core.DefaultErrorHandler.
+	err = translateFiberError(err)
 	if errHandler != nil {
 		errHandler(ctx, err)
 	} else {
 		core.DefaultErrorHandler(ctx, err)
 	}
+}
+
+// translateFiberError converts a *fiber.Error — raised by fiber/fasthttp
+// itself (body-too-large, header-too-large, route/method not found, ...) —
+// into the equivalent *core.HTTPError, so core.DefaultErrorHandler (and any
+// custom config.ErrorHandler) preserve fiber's own HTTP status instead of
+// genericizing it into a 500. Errors that are not a *fiber.Error pass
+// through unchanged, so the generic-500 behavior for unknown/non-HTTP errors
+// is not weakened.
+func translateFiberError(err error) error {
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return core.NewHTTPError(fe.Code, fe.Message)
+	}
+	return err
 }
 
 // wrapMiddlewareChain composes core middleware in front of NATIVE fiber

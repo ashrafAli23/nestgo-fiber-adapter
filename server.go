@@ -42,10 +42,17 @@ func New(config *core.Config) core.Server {
 		BodyLimit:   config.BodyLimit,
 		ErrorHandler: func(fc fiber.Ctx, err error) error {
 			// Handles errors returned by NATIVE fiber handlers (e.g. static
-			// files). Wrapped core handlers dispatch their own errors and
-			// always return nil, so this never double-invokes for them.
+			// files) AND transport-level errors fiber/fasthttp raise before
+			// any handler runs (e.g. BodyLimit exceeded -> 413). Wrapped core
+			// handlers dispatch their own errors and always return nil, so
+			// this never double-invokes for them.
 			ctx := acquireContext(fc)
 			defer releaseContext(ctx)
+			// Translate *fiber.Error (fiber/fasthttp's own HTTP semantics,
+			// e.g. 413/404/405) into *core.HTTPError first, so it survives
+			// core.DefaultErrorHandler's genericization of unknown errors
+			// into a 500 instead of being swallowed by it.
+			err = translateFiberError(err)
 			if config.ErrorHandler != nil {
 				config.ErrorHandler(ctx, err)
 			} else {
