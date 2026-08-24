@@ -14,7 +14,7 @@ Thank you for your interest in contributing!
 
 ### Prerequisites
 
-- Go 1.23 or later
+- Go 1.25.14 or later
 - Fiber v3
 
 ### Project Structure
@@ -25,7 +25,6 @@ nestgo-fiber-adapter/
   server.go        # FiberServer/FiberRouter — implements core.Server/Router
   snapshot.go      # FiberContextSnapshot — read-only cloned context
   doc.go           # Package documentation
-  example_test.go  # Testable examples for pkg.go.dev
 ```
 
 ### Key Design Principles

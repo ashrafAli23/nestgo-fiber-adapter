@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net/textproto"
+	"runtime/debug"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,36 +17,64 @@ import (
 )
 
 var _ core.Context = (*FiberContext)(nil)
+var _ core.ResponseResetter = (*FiberContext)(nil)
+var _ core.ResponseHeaderReader = (*FiberContext)(nil)
+var _ core.SameSiteCookieSetter = (*FiberContext)(nil)
 
-var contextPool = sync.Pool{
-	New: func() interface{} { return &FiberContext{} },
+// acquireContext creates a fresh FiberContext for the request.
+//
+// FiberContexts are intentionally NOT pooled: a pooled struct that is
+// re-acquired for the next request would let a stale reference (leaked to a
+// goroutine) silently read another request's data through the old handle.
+// With a per-request allocation the released flag is set exactly once and
+// never cleared, so any use-after-release deterministically panics instead.
+// The struct is two words plus an atomic.Bool — the allocation is negligible
+// next to the work fiber itself does per request.
+func acquireContext(fc fiber.Ctx) *FiberContext {
+	seedRequestContext(fc)
+	return &FiberContext{fiberCtx: fc}
 }
 
-func acquireContext(fc fiber.Ctx) *FiberContext {
-	ctx := contextPool.Get().(*FiberContext)
-	ctx.fiberCtx = fc
-	ctx.released.Store(false)
-	return ctx
+// seedRequestContext makes RequestCtx() carry real cancellation/deadline
+// semantics: fiber v3's Context() returns context.Background() unless a user
+// context was set, so we seed it with the *fasthttp.RequestCtx (which
+// implements context.Context and whose Done() fires on server shutdown).
+// Note that fasthttp cannot signal per-request client disconnects, so
+// cancellation granularity is coarser than net/http-based adapters.
+func seedRequestContext(fc fiber.Ctx) {
+	if fc.Context() == context.Background() {
+		if reqCtx := fc.RequestCtx(); reqCtx != nil {
+			fc.SetContext(reqCtx)
+		}
+	}
 }
 
 func releaseContext(ctx *FiberContext) {
 	ctx.released.Store(true)
 	ctx.fiberCtx = nil
-	contextPool.Put(ctx)
+	ctx.body = nil
 }
 
-// checkReleased panics with a clear message if the context is used after release.
-// Uses atomic.Bool for data-race-free checks without mutex overhead.
+// checkReleased panics with a clear message if the context is used after the
+// handler returned. Because FiberContexts are per-request (not pooled), the
+// released flag is never reset and this check is reliable: a leaked reference
+// always panics instead of silently reading another request's data.
+// Note that the underlying fiber.Ctx / fasthttp buffers are still recycled,
+// so Clone() remains the only safe way to hand data to a goroutine.
 func (c *FiberContext) checkReleased() {
 	if c.released.Load() {
 		panic("[NestGo] use-after-release: FiberContext used after handler returned. " +
-			"Fiber contexts are pooled and recycled. Use c.Clone() before passing to goroutines.")
+			"Fiber contexts are recycled. Use c.Clone() before passing to goroutines.")
 	}
 }
 
 // FiberContext wraps fiber.Ctx to implement core.Context.
 type FiberContext struct {
 	fiberCtx fiber.Ctx
+	// body caches an adapter-owned copy of the request body. fiber/fasthttp
+	// body bytes alias per-connection buffers that are recycled after the
+	// handler; the cache keeps Body() results stable (matching gin).
+	body     []byte
 	released atomic.Bool
 }
 
@@ -59,19 +88,30 @@ func (c *FiberContext) Query(key string) string {
 	return fiber.Query[string](c.fiberCtx, key)
 }
 
+// QueryDefault returns the default ONLY when the key is absent; a
+// present-but-empty parameter ("?flag=") returns "" (matching gin).
 func (c *FiberContext) QueryDefault(key, def string) string {
 	c.checkReleased()
-	val := fiber.Query[string](c.fiberCtx, key)
-	if val == "" {
+	if !c.fiberCtx.RequestCtx().QueryArgs().Has(key) {
 		return def
 	}
-	return val
+	return fiber.Query[string](c.fiberCtx, key)
 }
 
 func (c *FiberContext) GetHeader(key string) string { c.checkReleased(); return c.fiberCtx.Get(key) }
 func (c *FiberContext) Cookie(name string) string   { c.checkReleased(); return c.fiberCtx.Cookies(name) }
-func (c *FiberContext) Body() ([]byte, error)       { c.checkReleased(); return c.fiberCtx.Body(), nil }
-func (c *FiberContext) Bind(v interface{}) error    { c.checkReleased(); return c.fiberCtx.Bind().Body(v) }
+
+// Body returns the request body. The bytes are copied once into an
+// adapter-owned cache, so the returned slice remains valid after the handler
+// returns (fiber's own Body() aliases recycled fasthttp buffers).
+func (c *FiberContext) Body() ([]byte, error) {
+	c.checkReleased()
+	if c.body == nil {
+		c.body = append([]byte(nil), c.fiberCtx.Body()...)
+	}
+	return c.body, nil
+}
+func (c *FiberContext) Bind(v interface{}) error { c.checkReleased(); return c.fiberCtx.Bind().Body(v) }
 func (c *FiberContext) FormValue(key string) string {
 	c.checkReleased()
 	return c.fiberCtx.FormValue(key)
@@ -108,15 +148,31 @@ func (c *FiberContext) XML(status int, data interface{}) error {
 	return c.fiberCtx.XML(data)
 }
 
+// String writes format verbatim when no values are given (so a literal '%'
+// survives, matching gin); otherwise it applies fmt.Sprintf.
 func (c *FiberContext) String(status int, format string, vals ...interface{}) error {
 	c.checkReleased()
 	c.fiberCtx.Status(status)
+	if len(vals) == 0 {
+		return c.fiberCtx.SendString(format)
+	}
 	return c.fiberCtx.SendString(fmt.Sprintf(format, vals...))
 }
 
+// SendBytes writes raw bytes. When no Content-Type has been set yet it
+// defaults to application/octet-stream (cross-adapter contract).
 func (c *FiberContext) SendBytes(status int, data []byte) error {
 	c.checkReleased()
 	c.fiberCtx.Status(status)
+	h := &c.fiberCtx.Response().Header
+	// Temporarily disable fasthttp's implicit text/plain default so we can
+	// see whether a Content-Type was explicitly set.
+	h.SetNoDefaultContentType(true)
+	noCT := len(h.ContentType()) == 0
+	h.SetNoDefaultContentType(false)
+	if noCT {
+		h.SetContentType("application/octet-stream")
+	}
 	return c.fiberCtx.Send(data)
 }
 
@@ -144,9 +200,14 @@ func (c *FiberContext) ResponseStatus() int {
 	c.checkReleased()
 	return c.fiberCtx.Response().StatusCode()
 }
+
+// ResponseBody returns a copy of the buffered response body, per the
+// core.Context contract. fasthttp recycles the underlying buffer across
+// requests, so returning it directly would let long-lived consumers (e.g.
+// the Idempotency middleware's 24h cache) observe other requests' bytes.
 func (c *FiberContext) ResponseBody() []byte {
 	c.checkReleased()
-	return c.fiberCtx.Response().Body()
+	return append([]byte(nil), c.fiberCtx.Response().Body()...)
 }
 func (c *FiberContext) SetHeader(k, v string) { c.checkReleased(); c.fiberCtx.Set(k, v) }
 
@@ -164,6 +225,39 @@ func (c *FiberContext) SetCookie(name, value string, maxAge int, path, domain st
 	})
 }
 
+// SetCookieSameSite implements core.SameSiteCookieSetter.
+func (c *FiberContext) SetCookieSameSite(name, value string, maxAge int, path, domain string, secure, httpOnly bool, sameSite string) {
+	c.checkReleased()
+	c.fiberCtx.Cookie(&fiber.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		Domain:   domain,
+		MaxAge:   maxAge,
+		Expires:  time.Now().Add(time.Duration(maxAge) * time.Second),
+		Secure:   secure,
+		HTTPOnly: httpOnly,
+		SameSite: sameSite,
+	})
+}
+
+// ResetResponse implements core.ResponseResetter: it discards the buffered
+// response body and status so a middleware can replace the response (e.g.
+// ETag converting a buffered 200 into a 304). It has no effect on bytes
+// already streamed to the client.
+func (c *FiberContext) ResetResponse() {
+	c.checkReleased()
+	resp := c.fiberCtx.Response()
+	resp.ResetBody()
+	resp.SetStatusCode(fiber.StatusOK)
+}
+
+// ResponseHeader implements core.ResponseHeaderReader.
+func (c *FiberContext) ResponseHeader(key string) string {
+	c.checkReleased()
+	return string(c.fiberCtx.Response().Header.Peek(key))
+}
+
 func (c *FiberContext) Redirect(status int, url string) error {
 	c.checkReleased()
 	return c.fiberCtx.Redirect().Status(status).To(url)
@@ -172,7 +266,14 @@ func (c *FiberContext) Redirect(status int, url string) error {
 // ─── Metadata ───────────────────────────────────────────────────────────────
 
 func (c *FiberContext) ClientIP() string { c.checkReleased(); return c.fiberCtx.IP() }
-func (c *FiberContext) FullURL() string  { c.checkReleased(); return c.fiberCtx.OriginalURL() }
+
+// FullURL returns scheme://host/path?query (cross-adapter contract).
+func (c *FiberContext) FullURL() string {
+	c.checkReleased()
+	// String concatenation allocates a fresh string, so the result does not
+	// alias fasthttp's recycled buffers.
+	return c.fiberCtx.Scheme() + "://" + c.fiberCtx.Host() + c.fiberCtx.OriginalURL()
+}
 
 // ─── Context Storage ────────────────────────────────────────────────────────
 
@@ -193,6 +294,9 @@ func (c *FiberContext) Underlying() interface{} { c.checkReleased(); return c.fi
 
 func (c *FiberContext) RequestCtx() context.Context {
 	c.checkReleased()
+	// Seeded with the *fasthttp.RequestCtx at acquisition (see
+	// seedRequestContext), so this carries server-shutdown cancellation
+	// rather than a bare context.Background().
 	return c.fiberCtx.Context()
 }
 
@@ -201,16 +305,20 @@ func (c *FiberContext) SetRequestCtx(ctx context.Context) {
 	c.fiberCtx.SetContext(ctx)
 }
 
-// Clone returns a snapshot of the FiberContext that is safe to use in goroutines.
-// Fiber's context is NOT safe to use after the handler returns, so we copy
-// the essential request data into a standalone struct.
+// Clone returns a snapshot of the FiberContext that is safe to use in
+// goroutines. Fiber's context is NOT safe to use after the handler returns,
+// so we deep-copy the essential request data into a standalone struct.
+// Every string sourced from fiber is cloned: fiber v3 returns zero-copy
+// aliases into fasthttp's per-connection buffers ("valid only within the
+// handler"), which would silently mutate into the next request's bytes.
 func (c *FiberContext) Clone() core.Context {
+	c.checkReleased()
 	s := acquireSnapshot()
 	s.stdCtx = context.WithoutCancel(c.fiberCtx.Context())
-	s.method = c.fiberCtx.Method()
-	s.path = c.fiberCtx.Route().Path
-	s.ip = c.fiberCtx.IP()
-	s.fullURL = c.fiberCtx.OriginalURL()
+	s.method = strings.Clone(c.fiberCtx.Method())
+	s.path = strings.Clone(c.fiberCtx.Route().Path)
+	s.ip = strings.Clone(c.fiberCtx.IP())
+	s.fullURL = c.FullURL() // composed via concatenation — already a fresh string
 	s.body = append(s.body[:0], c.fiberCtx.Body()...)
 
 	// Reuse pooled maps instead of allocating new ones every Clone().
@@ -220,6 +328,9 @@ func (c *FiberContext) Clone() core.Context {
 	return s
 }
 
+// copyHeadersInto stores headers under canonical MIME keys so snapshot
+// lookups are case-insensitive like the live context. The FIRST occurrence
+// of a duplicate header wins, matching fasthttp Peek semantics.
 func (c *FiberContext) copyHeadersInto(s *FiberContextSnapshot) {
 	if s.headers == nil {
 		s.headers = make(map[string]string)
@@ -227,7 +338,10 @@ func (c *FiberContext) copyHeadersInto(s *FiberContextSnapshot) {
 		clear(s.headers)
 	}
 	for key, value := range c.fiberCtx.Request().Header.All() {
-		s.headers[string(key)] = string(value)
+		k := textproto.CanonicalMIMEHeaderKey(string(key))
+		if _, ok := s.headers[k]; !ok {
+			s.headers[k] = string(value)
+		}
 	}
 }
 
@@ -238,7 +352,7 @@ func (c *FiberContext) copyParamsInto(s *FiberContextSnapshot) {
 		clear(s.params)
 	}
 	for _, key := range c.fiberCtx.Route().Params {
-		s.params[key] = c.fiberCtx.Params(key)
+		s.params[strings.Clone(key)] = strings.Clone(c.fiberCtx.Params(key))
 	}
 }
 
@@ -255,31 +369,80 @@ func (c *FiberContext) copyQueriesInto(s *FiberContextSnapshot) {
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
+// wrapHandler adapts a fully composed core.HandlerFunc into the single native
+// fiber handler registered for a route. It:
+//   - acquires the adapter context,
+//   - recovers panics into a 500 through the error path (adapter-level safety
+//     net, independent of middleware.Recovery()),
+//   - runs the composed middleware+handler chain, and
+//   - on a returned error invokes the configured error handler EXACTLY once,
+//     and only if nothing has been written to the response yet.
+//
+// It always returns nil to fiber so fiber's own ErrorHandler never runs a
+// second time for the same error.
 func wrapHandler(handler core.HandlerFunc, errHandler core.ErrorHandler) fiber.Handler {
 	return func(fc fiber.Ctx) error {
 		ctx := acquireContext(fc)
 		defer releaseContext(ctx)
-		if err := handler(ctx); err != nil {
-			if errHandler != nil {
-				errHandler(ctx, err)
-			} else {
-				core.DefaultErrorHandler(ctx, err)
-			}
-			return nil
+
+		if err := safeInvoke(handler, ctx); err != nil {
+			dispatchError(ctx, fc, err, errHandler)
 		}
 		return nil
 	}
 }
 
-func wrapMiddleware(mw core.MiddlewareFunc) fiber.Handler {
-	return func(fc fiber.Ctx) error {
-		ctx := acquireContext(fc)
-		defer releaseContext(ctx)
-		next := func(c core.Context) error { return fc.Next() }
-		return mw(next)(ctx)
+// safeInvoke runs the composed chain, converting panics into a 500 error so
+// one panicking handler cannot kill the process (fiber/fasthttp do not
+// recover handler panics themselves).
+func safeInvoke(handler core.HandlerFunc, ctx *FiberContext) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			core.Log().Error("panic recovered in handler",
+				core.F("panic", fmt.Sprintf("%v", r)),
+				core.F("stack", string(debug.Stack())))
+			err = core.ErrInternalServer("Internal Server Error")
+		}
+	}()
+	return handler(ctx)
+}
+
+// dispatchError invokes the configured error handler exactly once, and only
+// if nothing has been written to the response yet; otherwise it logs the
+// error to avoid double-written responses.
+func dispatchError(ctx *FiberContext, fc fiber.Ctx, err error, errHandler core.ErrorHandler) {
+	resp := fc.Response()
+	if len(resp.Body()) > 0 || resp.IsBodyStream() {
+		core.Log().Error("handler returned error after response was written",
+			core.F("error", err.Error()))
+		return
+	}
+	if errHandler != nil {
+		errHandler(ctx, err)
+	} else {
+		core.DefaultErrorHandler(ctx, err)
 	}
 }
 
+// wrapMiddlewareChain composes core middleware in front of NATIVE fiber
+// handlers (static files). The terminal handler continues the fiber chain
+// via fc.Next(). Errors and panics go through the same single-dispatch error
+// path as wrapHandler.
+func wrapMiddlewareChain(mws []core.MiddlewareFunc, errHandler core.ErrorHandler) fiber.Handler {
+	return func(fc fiber.Ctx) error {
+		ctx := acquireContext(fc)
+		defer releaseContext(ctx)
+
+		next := core.HandlerFunc(func(core.Context) error { return fc.Next() })
+		if err := safeInvoke(applyRouteMiddleware(next, mws), ctx); err != nil {
+			dispatchError(ctx, fc, err, errHandler)
+		}
+		return nil
+	}
+}
+
+// applyRouteMiddleware composes mws around handler with mws[0] outermost:
+// final = mws[0](mws[1](...(handler))).
 func applyRouteMiddleware(handler core.HandlerFunc, mws []core.MiddlewareFunc) core.HandlerFunc {
 	for i := len(mws) - 1; i >= 0; i-- {
 		handler = mws[i](handler)

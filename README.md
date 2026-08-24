@@ -1,7 +1,7 @@
 <h1 align="center">NestGo Fiber Adapter</h1>
 
 <p align="center">
-  <strong>High-performance, allocation-free Fiber v3 HTTP engine adapter for the NestGo web framework in Go (Golang).</strong>
+  <strong>High-performance Fiber v3 HTTP engine adapter for the NestGo web framework in Go (Golang).</strong>
 </p>
 
 <p align="center">
@@ -12,6 +12,8 @@
 
 ---
 
+> **📚 Documentation:** <https://ashrafali23.github.io/nestgo/adapters.html>
+
 This package implements the NestGo framework's `core.Server`, `core.Router`, and `core.Context` interfaces on top of [Fiber v3](https://gofiber.io). This allows you to leverage NestGo's powerful dependency injection, Guards, Interceptors, Pipes, and Middleware ecosystem alongside Fiber's ultra-fast, low-memory-footprint HTTP web server for Go.
 
 ## Table of Contents
@@ -20,8 +22,9 @@ This package implements the NestGo framework's `core.Server`, `core.Router`, and
 - [Quick Start](#quick-start)
 - [Swapping from Gin](#swapping-from-gin)
 - [Features](#features)
-  - [Context Pooling](#context-pooling)
+  - [Per-Request Contexts](#per-request-contexts)
   - [Use-After-Release Protection](#use-after-release-protection)
+  - [Panic Recovery](#panic-recovery)
   - [Safe Goroutine Usage with Clone](#safe-goroutine-usage-with-clone)
   - [Route Groups](#route-groups)
   - [Accessing Raw Fiber APIs](#accessing-raw-fiber-apis)
@@ -92,18 +95,22 @@ NestGo's adapter pattern means switching from Gin to Fiber is usually a one-line
 
 ## Features
 
-### Context Pooling
+### Per-Request Contexts
 
-Fiber recycles its context after each request to achieve high performance. This adapter mirrors that behavior with `sync.Pool`-based context pooling, achieving **zero allocations per request** for context structs.
+Fiber recycles its own context (and the underlying fasthttp buffers) after each request. The adapter's `FiberContext` wrapper, however, is deliberately **allocated fresh per request — not pooled**: the struct is tiny (three fields), and skipping the pool makes use-after-release detection deterministic, because the released flag is set once and never cleared. The cost is one small allocation per request, negligible next to the work Fiber itself does.
 
 ### Use-After-Release Protection
 
-Every `FiberContext` method checks an `atomic.Bool` released flag (~1ns overhead). If you accidentally use a context after the handler returns, you get a clear panic message instead of silent data corruption:
+Every `FiberContext` method checks an `atomic.Bool` released flag (~1ns overhead). If you accidentally use a context after the handler returns, you reliably get a clear panic message instead of silent data corruption:
 
 ```text
 [NestGo] use-after-release: FiberContext used after handler returned.
-Fiber contexts are pooled and recycled. Use c.Clone() before passing to goroutines.
+Fiber contexts are recycled. Use c.Clone() before passing to goroutines.
 ```
+
+### Panic Recovery
+
+A panicking handler can no longer kill the process. The adapter recovers panics at two levels: its own recover around every composed handler and middleware chain (turning the panic into a logged 500 through the normal error-dispatch path), plus Fiber's recover middleware as a safety net for native Fiber handlers such as static files (with stack traces when `Debug` is enabled).
 
 ### Safe Goroutine Usage with Clone
 
@@ -130,10 +137,12 @@ server.GET("/async", func(c core.Context) error {
 
 `Clone()` returns a `FiberContextSnapshot` containing copied:
 
-- HTTP method, path, IP, full URL
+- HTTP method, path, IP, full URL (`scheme://host/path?query`)
 - Request body (deep copy)
-- Headers, query params, route params (map copies)
+- Headers, query params, route params (map copies — header lookups are case-insensitive, matching the live context)
 - Locals (independent map)
+
+Every value is deep-copied, so nothing in the snapshot aliases fasthttp's recycled buffers.
 
 > **Pro Tip**: Snapshots are pooled. Call `ReleaseSnapshot()` when done to maintain maximum high-throughput API performance.
 
@@ -151,6 +160,8 @@ admin := api.Group("/admin", middleware.RateLimit(middleware.RateLimitConfig{
 }))
 admin.DELETE("/users/:id", deleteUser)
 ```
+
+The middleware chain (group chain outermost, then route middleware, then the handler) is composed into a single native Fiber handler at route registration. Handler errors flow back through every middleware — NestGo exception filters and interceptors see them — and the error handler runs exactly once. One rule follows: middleware added via `Use()` **after** a route is registered does not apply to that route, so register global middleware before your routes (NestGo's DI container already does this automatically).
 
 ### Accessing Raw Fiber APIs
 
@@ -198,6 +209,7 @@ server := fiberadapter.New(&core.Config{
     Addr:         ":8080",
     ReadTimeout:  30,               // seconds
     WriteTimeout: 30,               // seconds
+    IdleTimeout:  60,               // seconds
     BodyLimit:    10 * 1024 * 1024, // 10MB
     ErrorHandler: customErrorHandler,
 })
@@ -208,11 +220,13 @@ server := fiberadapter.New(&core.Config{
 | `AppName`       | `string`            | `""`      | Application name (shown in Fiber's app info)                  |
 | `Addr`          | `string`            | `":3000"` | Default listen address                                        |
 | `Debug`         | `bool`              | `false`   | Enable Fiber debug output and print routes during startup     |
-| `DisableLogger` | `bool`              | `false`   | Disables Fiber's built-in global logger middleware             |
 | `ReadTimeout`   | `int`               | `0`       | Read timeout in seconds                                       |
 | `WriteTimeout`  | `int`               | `0`       | Write timeout in seconds                                      |
-| `BodyLimit`     | `int`               | `0`       | Max request body size in bytes                                |
+| `IdleTimeout`   | `int`               | `0`       | Keep-alive idle connection timeout in seconds                 |
+| `BodyLimit`     | `int`               | `0`       | Max request body size in bytes (oversized bodies get 413)     |
 | `ErrorHandler`  | `core.ErrorHandler` | `nil`     | Custom error handler (defaults to `core.DefaultErrorHandler`) |
+
+> Note: `Config.ReadHeaderTimeout` and `Config.MaxHeaderBytes` are **not** mapped — Fiber v3 / fasthttp expose no equivalent (header size is bounded by fasthttp's per-connection read buffer). `DisableLogger` is not used by this adapter.
 
 ## Performance
 
@@ -220,7 +234,7 @@ This adapter is deeply optimized for production web server workloads and highly 
 
 | Optimization           | Technique                     | Impact                   |
 | ---------------------- | ----------------------------- | ------------------------ |
-| Context pooling        | `sync.Pool`                   | Zero alloc per request   |
+| Per-request contexts   | Tiny three-field wrapper      | Reliable misuse panics   |
 | Release detection      | `atomic.Bool`                 | ~1ns per method call     |
 | Snapshot pooling       | `sync.Pool` + map reuse       | Reduced GC on `Clone()`  |
 | Header/query iteration | Go 1.23 `iter.Seq2`           | No deprecated `VisitAll` |
@@ -228,11 +242,11 @@ This adapter is deeply optimized for production web server workloads and highly 
 
 ## Compatibility
 
-| Dependency  | Version |
-| ----------- | ------- |
-| Go          | 1.23+   |
-| Fiber       | v3.x    |
-| NestGo Core | v1.x    |
+| Dependency  | Version                   |
+| ----------- | ------------------------- |
+| Go          | 1.25.14+                  |
+| Fiber       | v3.x (tested with v3.5.0) |
+| NestGo Core | v1.x                      |
 
 ## API Reference
 

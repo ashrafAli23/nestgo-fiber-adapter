@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Bumped the `go` directive from `1.25.0` to `1.25.14`, pulling in Go standard-library security fixes. `govulncheck ./...` reports zero reachable vulnerabilities (the only remaining advisory is the unfixable "openpgp unmaintained" notice in `golang.org/x/crypto`, which this module never imports).
+
+### Changed
+
+- **Upgraded Fiber from v3.1.0 to v3.5.0** (no API changes required in the adapter).
+- Upgraded transitive dependencies to latest stable, including `valyala/fasthttp` v1.73.0, `klauspost/compress` v1.19.2, `golang.org/x/crypto` v0.55.0, and `golang.org/x/net` v0.58.0.
+- **Behavior change:** middleware added via `Use()` after a route is registered no longer applies to that route — middleware chains are now composed into the route's handler at registration time (converges with the Gin adapter).
+- `FiberContext` is no longer pooled: each request allocates a small fresh wrapper so use-after-release panics are deterministic. Underlying Fiber/fasthttp buffers are still recycled, so `Clone()` remains required for goroutines.
+
+### Added
+
+- `FiberContext` implements the `core.ResponseResetter`, `core.ResponseHeaderReader`, and `core.SameSiteCookieSetter` capabilities (enables ETag 304 rewrites, Idempotency Content-Type replay, and CSRF SameSite cookies)
+- `core.Config.IdleTimeout` is now mapped onto `fiber.Config.IdleTimeout` (`ReadHeaderTimeout`/`MaxHeaderBytes` have no Fiber v3 equivalent and remain unmapped)
+
+### Fixed
+
+- Panic recovery added: a panicking handler or middleware becomes a logged 500 instead of killing the process (adapter-level recover for composed chains, plus Fiber's recover middleware for native handlers)
+- `ResponseBody()` returns an adapter-owned copy instead of fasthttp's live pooled buffer, so cached responses (e.g. the Idempotency middleware) can never alias recycled memory
+- `Clone()` snapshots no longer alias fasthttp memory: method, path, client IP, params, and the full URL are copied; snapshot header lookups are case-insensitive with first-occurrence semantics
+- Handler errors now propagate back through `Use()`/`Group()` middleware: each route is composed into a single native handler and the configured `ErrorHandler` runs exactly once, only when nothing has been written
+- `RequestCtx()` carries the request's `*fasthttp.RequestCtx` (server shutdown cancellation and deadlines) instead of `context.Background()`
+- `Body()` returns a stable adapter-owned copy that survives handler completion instead of a fasthttp-aliased slice
+- Snapshot pool no longer retains previous-request state; snapshot locals are goroutine-safe; a double `ReleaseSnapshot` is a no-op
+- Cross-adapter parity: `String` writes the format verbatim when no values are given (literal `%` preserved), `QueryDefault` returns the default only when the key is absent, `FullURL` includes scheme and host, and `SendBytes` defaults Content-Type to `application/octet-stream`
+
+---
+
 ## [1.3.0] - 2026-04-09
 
 ### Changed

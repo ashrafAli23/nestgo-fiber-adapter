@@ -1,4 +1,7 @@
-// Package fiberadapter provides a [Fiber] v3 adapter for the NestGo framework.
+// Package fiberadapter provides a [Fiber] v3 adapter for NestGo, the
+// NestJS-style web framework for Go.
+//
+// Full documentation: https://ashrafali23.github.io/nestgo/adapters.html
 //
 // It implements [core.Server], [core.Router], and [core.Context] on top of
 // [github.com/gofiber/fiber/v3], letting you use NestGo's Guards, Interceptors,
@@ -45,13 +48,17 @@
 // to the underlying [fiber.Ctx] — you never touch Fiber APIs directly unless
 // you choose to via [FiberContext.Underlying].
 //
-// # Context Pooling & Use-After-Release Protection
+// # Context Lifetime & Use-After-Release Protection
 //
-// Fiber recycles its context objects after each request. This adapter mirrors
-// that pattern with [sync.Pool]-based context pooling and adds a safety net:
-// every [FiberContext] method checks an [atomic.Bool] released flag. If you
-// accidentally use a context after the handler returns, it panics with a clear
-// message instead of silently corrupting data.
+// Fiber recycles its underlying context objects and buffers after each
+// request. This adapter allocates a fresh [FiberContext] per request (the
+// wrapper struct is intentionally NOT pooled), and every method checks an
+// [atomic.Bool] released flag that is set once when the handler returns and
+// never cleared. If you accidentally use a context after the handler returns,
+// it reliably panics with a clear message instead of silently reading another
+// request's data. Note the panic protects the wrapper only — the underlying
+// fiber/fasthttp buffers are still recycled, so [FiberContext.Clone] remains
+// the only safe way to hand request data to a goroutine.
 //
 // To safely pass context to a goroutine, call [FiberContext.Clone]:
 //
@@ -97,7 +104,9 @@
 //
 // # Performance Characteristics
 //
-//   - Context pooling via [sync.Pool] — zero allocation per request for context structs
+//   - Per-request context structs — one small allocation per request buys a
+//     reliable use-after-release panic (pooled wrappers could silently expose
+//     another request's data to stale references)
 //   - Use-after-release checks via [atomic.Bool] — single atomic load, ~1ns overhead
 //   - Snapshot pooling with map reuse — [Clone] reuses maps via [clear] instead of reallocating
 //   - Go 1.23 range-over-func iterators — headers and query args use [iter.Seq2], no deprecated VisitAll
