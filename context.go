@@ -245,8 +245,18 @@ func (c *FiberContext) ResponseStatus() int {
 // core.Context contract. fasthttp recycles the underlying buffer across
 // requests, so returning it directly would let long-lived consumers (e.g.
 // the Idempotency middleware's 24h cache) observe other requests' bytes.
+//
+// For a streamed response, fasthttp's Response.Body() is not a plain getter:
+// when a body stream is set, calling it drains the stream to completion into
+// a buffer and closes it — so calling it here would block until the stream
+// ends and would destroy it for the real client. Return nil instead, which
+// also matches gin's contract (ResponseBody() returns nil once a response
+// has been streamed).
 func (c *FiberContext) ResponseBody() []byte {
 	c.checkReleased()
+	if c.fiberCtx.Response().IsBodyStream() {
+		return nil
+	}
 	return append([]byte(nil), c.fiberCtx.Response().Body()...)
 }
 func (c *FiberContext) SetHeader(k, v string) { c.checkReleased(); c.fiberCtx.Set(k, v) }
@@ -452,7 +462,12 @@ func safeInvoke(handler core.HandlerFunc, ctx *FiberContext) (err error) {
 // error to avoid double-written responses.
 func dispatchError(ctx *FiberContext, fc fiber.Ctx, err error, errHandler core.ErrorHandler) {
 	resp := fc.Response()
-	if len(resp.Body()) > 0 || resp.IsBodyStream() {
+	// IsBodyStream() must be checked FIRST: resp.Body() is not a cheap getter
+	// when a body stream is set — it drains the stream to completion into a
+	// buffer and closes it. Evaluating it first here would block this
+	// dispatch (and destroy the stream) on every error returned after
+	// SendStream, instead of just logging and returning.
+	if resp.IsBodyStream() || len(resp.Body()) > 0 {
 		core.Log().Error("handler returned error after response was written",
 			core.F("error", err.Error()))
 		return
