@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2026-08-24
 
 ### Security
 
@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Upgraded Fiber from v3.1.0 to v3.5.0** (no API changes required in the adapter).
+- **Upgraded Fiber from v3.1.0 to v3.5.0** (no API changes required in the adapter). Core dependency `github.com/ashrafAli23/nestgo` upgraded to `v1.4.0`.
 - Upgraded transitive dependencies to latest stable, including `valyala/fasthttp` v1.73.0, `klauspost/compress` v1.19.2, `golang.org/x/crypto` v0.55.0, and `golang.org/x/net` v0.58.0.
 - **Behavior change:** middleware added via `Use()` after a route is registered no longer applies to that route — middleware chains are now composed into the route's handler at registration time (converges with the Gin adapter).
 - `FiberContext` is no longer pooled: each request allocates a small fresh wrapper so use-after-release panics are deterministic. Underlying Fiber/fasthttp buffers are still recycled, so `Clone()` remains required for goroutines.
