@@ -41,11 +41,42 @@ func acquireContext(fc fiber.Ctx) *FiberContext {
 // implements context.Context and whose Done() fires on server shutdown).
 // Note that fasthttp cannot signal per-request client disconnects, so
 // cancellation granularity is coarser than net/http-based adapters.
+//
+// The RequestCtx is wrapped rather than handed out directly: fasthttp's own
+// Done()/Err() re-read a *Server-level field (RequestCtx.s.done) on every
+// call, which is only ever closed and later nilled out exactly once, during
+// Server.Shutdown — unsynchronized on both sides. A handler-spawned goroutine
+// that polls Done() in a loop (e.g. an SSE producer bound to this context, a
+// documented pattern) then races that nil-write under the Go race detector,
+// even though the channel value itself never changes for a request's
+// lifetime. fixedDoneContext captures Done() exactly once, up front, so nothing
+// downstream ever re-touches the racy field again.
 func seedRequestContext(fc fiber.Ctx) {
 	if fc.Context() == context.Background() {
 		if reqCtx := fc.RequestCtx(); reqCtx != nil {
-			fc.SetContext(reqCtx)
+			fc.SetContext(&fixedDoneContext{Context: reqCtx, done: reqCtx.Done()})
 		}
+	}
+}
+
+// fixedDoneContext wraps a context.Context, overriding Done()/Err() to
+// serve a Done() channel captured once at construction time instead of
+// querying the wrapped context on every call. See seedRequestContext for why:
+// it lets us hand out fasthttp's RequestCtx cancellation signal without
+// repeatedly re-reading the underlying racy field.
+type fixedDoneContext struct {
+	context.Context
+	done <-chan struct{}
+}
+
+func (c *fixedDoneContext) Done() <-chan struct{} { return c.done }
+
+func (c *fixedDoneContext) Err() error {
+	select {
+	case <-c.done:
+		return context.Canceled
+	default:
+		return nil
 	}
 }
 
@@ -178,6 +209,15 @@ func (c *FiberContext) SendBytes(status int, data []byte) error {
 
 func (c *FiberContext) SendStream(stream io.Reader) error {
 	c.checkReleased()
+	// fasthttp only pushes header bytes to the socket immediately when
+	// ImmediateHeaderFlush is set; otherwise they sit buffered until the
+	// body stream produces its first chunk (see writeBodyStream in
+	// valyala/fasthttp). A client that waits for headers before writing
+	// data (SSE/EventSource, or any reader fed from elsewhere, e.g. an
+	// io.Pipe) would then deadlock waiting on a response that was never
+	// actually sent. The flag is reset on the next request by fasthttp's
+	// own Response.Reset(), so this only affects the current response.
+	c.fiberCtx.Response().ImmediateHeaderFlush = true
 	return c.fiberCtx.SendStream(stream)
 }
 
