@@ -102,6 +102,43 @@
 //	    return c.JSON(200, nil)
 //	})
 //
+// # Request Context
+//
+// [FiberContext.RequestCtx] returns a small wrapper [context.Context], not
+// the *fasthttp.RequestCtx itself. The wrapper carries the same cancellation
+// signal (Done fires on server shutdown — fasthttp cannot signal per-request
+// client disconnects) and delegates Deadline and Value to the underlying
+// request context, but it is NOT type-assertable to *fasthttp.RequestCtx.
+// For raw fasthttp access go through [FiberContext.Underlying]:
+//
+//	fc := c.Underlying().(fiber.Ctx)
+//	raw := fc.RequestCtx() // *fasthttp.RequestCtx
+//
+// # Streaming Responses
+//
+// [FiberContext.SendStream] sets fasthttp's ImmediateHeaderFlush for the
+// current response, so the status and headers reach the client as soon as
+// streaming starts instead of waiting for the first body chunk — SSE
+// (EventSource) clients and readers that block until headers arrive no
+// longer deadlock. [FiberContext.ResponseBody] returns a copy of the
+// buffered response body, and nil for a streamed response (fasthttp's
+// Response.Body would otherwise drain and close the stream).
+//
+// # Fiber Error Translation
+//
+// Errors raised by fiber/fasthttp themselves arrive as [fiber.Error] values:
+// 413 when the [core.Config] BodyLimit is exceeded, 404 for an unmatched
+// route, 405 for a wrong method. The adapter translates them into
+// [core.HTTPError] with the same status code and message before invoking
+// the error handler ([core.DefaultErrorHandler] or your [core.Config]
+// ErrorHandler), so they keep their real status instead of being
+// genericized into a 500. Any other non-HTTPError error still becomes a
+// generic 500.
+//
+// One consequence: a handler that returns a hand-rolled [fiber.NewError]
+// with a code and message surfaces both to the client. Prefer
+// [core.NewHTTPError] in NestGo handlers.
+//
 // # Performance Characteristics
 //
 //   - Per-request context structs — one small allocation per request buys a

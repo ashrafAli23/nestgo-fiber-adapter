@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://pkg.go.dev/github.com/ashrafAli23/nestgo-fiber-adapter"><img src="https://pkg.go.dev/badge/github.com/ashrafAli23/nestgo-fiber-adapter.svg" alt="Go Reference"></a>
   <a href="https://goreportcard.com/report/github.com/ashrafAli23/nestgo-fiber-adapter"><img src="https://goreportcard.com/badge/github.com/ashrafAli23/nestgo-fiber-adapter" alt="Go Report Card"></a>
+  <a href="https://github.com/ashrafAli23/nestgo-fiber-adapter/actions/workflows/ci.yml"><img src="https://github.com/ashrafAli23/nestgo-fiber-adapter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
 </p>
 
@@ -28,10 +29,13 @@ This package implements the NestGo framework's `core.Server`, `core.Router`, and
   - [Safe Goroutine Usage with Clone](#safe-goroutine-usage-with-clone)
   - [Route Groups](#route-groups)
   - [Accessing Raw Fiber APIs](#accessing-raw-fiber-apis)
+  - [Streaming Responses](#streaming-responses)
+  - [Fiber Error Translation](#fiber-error-translation)
   - [Graceful Shutdown](#graceful-shutdown)
 - [Configuration](#configuration)
 - [Performance](#performance)
 - [Compatibility](#compatibility)
+- [Conformance](#conformance)
 - [API Reference](#api-reference)
 - [Related Packages](#related-packages)
 - [License](#license)
@@ -180,6 +184,18 @@ server.GET("/raw", func(c core.Context) error {
 })
 ```
 
+> **Note:** `c.RequestCtx()` returns a small wrapper `context.Context`, not the `*fasthttp.RequestCtx` itself. The wrapper carries the same cancellation signal (`Done()` fires on server shutdown — fasthttp cannot signal per-request client disconnects) and delegates `Deadline()`/`Value()` to the underlying request context, but it is **not** type-assertable to `*fasthttp.RequestCtx`. For raw fasthttp access go through `Underlying()`: `c.Underlying().(fiber.Ctx).RequestCtx()`.
+
+### Streaming Responses
+
+`SendStream` sets fasthttp's `ImmediateHeaderFlush` for the current response, so the status and headers reach the client as soon as streaming starts instead of waiting for the first body chunk — Server-Sent Events (`EventSource`) clients and `io.Pipe`-fed readers that block until headers arrive no longer deadlock. `ResponseBody()` returns a copy of the buffered response body, and `nil` for a streamed response (fasthttp's `Body()` would otherwise drain and close the stream).
+
+### Fiber Error Translation
+
+Errors raised by Fiber/fasthttp themselves arrive as `*fiber.Error` values — 413 when `BodyLimit` is exceeded, 404 for an unmatched route, 405 for a wrong method. The adapter translates them into `core.HTTPError` with the same status code and message before invoking the error handler (`core.DefaultErrorHandler` or your `Config.ErrorHandler`), so they keep their real status instead of being genericized into a 500. Any other non-`HTTPError` error still becomes a generic 500.
+
+One consequence: a handler that returns a hand-rolled `fiber.NewError(code, msg)` surfaces both `code` and `msg` to the client. Prefer `core.NewHTTPError` in NestGo handlers.
+
 ### Graceful Shutdown
 
 Ensures no requests are dropped during server restarts or deployments:
@@ -247,6 +263,10 @@ This adapter is deeply optimized for production web server workloads and highly 
 | Go          | 1.25.14+                  |
 | Fiber       | v3.x (tested with v3.5.0) |
 | NestGo Core | v1.x                      |
+
+## Conformance
+
+This adapter passes the [NestGo adapter conformance suite](https://ashrafali23.github.io/nestgo/writing-an-adapter.html) — 22 behavioral checks (routing, request/response semantics, middleware, errors, context safety, streaming/SSE, body limits, graceful shutdown), run on every push in CI (`go test -race ./...`).
 
 ## API Reference
 

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `SendStream` (including SSE) no longer deadlocks clients that wait for headers before producing data: `ImmediateHeaderFlush` is set so status and headers reach the client at stream start instead of sitting buffered until the first body chunk
+- An error returned after `SendStream` no longer hangs the request: error dispatch checks `IsBodyStream()` before `Body()` (fasthttp's `Body()` drains a body stream), and `ResponseBody()` returns `nil` for streamed responses (matches the Gin adapter)
+- `*fiber.Error` raised by fiber/fasthttp (413 body-too-large, 404, 405) is translated to `core.HTTPError` so its real status code survives dispatch instead of coming out as a 500; unknown non-HTTP errors still return a generic 500
+- Data race between the request context's `Done()` and `Server.Shutdown` under `-race` avoided: the request context captures fasthttp's `Done()` channel once at request start (same channel, same close — cancellation is unchanged)
+
+### Changed
+
+- **Behavior change:** `RequestCtx()` returns a small wrapper context, not `*fasthttp.RequestCtx` itself, so it is no longer directly type-assertable to `*fasthttp.RequestCtx` — use `c.Underlying().(fiber.Ctx)`, the documented route
+- **Behavior change:** a handler returning a hand-rolled `fiber.NewError(code, msg)` now surfaces `msg` to the client with `code` (previously genericized to a 500); framework-raised fiber errors use fixed status strings, so no request data can leak
+
+### Added
+
+- Runs the `nestgo` `conformance` suite (22 checks) in `conformance_test.go`
+- `.github/workflows/ci.yml` — build, vet, race tests, and `govulncheck` on every push to `main` and pull request
+
+---
+
 ## [1.4.0] - 2026-08-24
 
 ### Security
