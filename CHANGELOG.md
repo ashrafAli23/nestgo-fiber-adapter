@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Runs the `nestgo` `conformance` suite (22 checks) in `conformance_test.go`
 - `.github/workflows/ci.yml` — build, vet, race tests, and `govulncheck` on every push to `main` and pull request
+- Benchmarks comparing the raw engine with NestGo on it (`go test -bench .`), results in `BENCHMARKS.md`; CI runs them as a smoke test
+- `ExampleNew` runnable example for pkg.go.dev
+- Dependabot (weekly, grouped minor/patch), issue and PR templates, `SECURITY.md`, `CODE_OF_CONDUCT.md`
 
 ---
 
