@@ -31,11 +31,13 @@ own range (1882–3602) is unusually wide across these 10 runs (likely scheduler
 its median is still a >1x delta over `RawFiber_Middleware3`'s much tighter 1262–1379 range.
 
 **What's identical** between the raw and NestGo columns: the JSON payload
-(`map[string]bool{"ok": true}`), the routed path and method, `RequestCtx` construction per
-iteration (via fasthttp's own `RequestCtx.Init`, on both sides), the number of recovery
-layers (one each — `fiberadapter.New` already installs `recover.New()`, so the raw side adds
-its own to match rather than NestGo running two), and doing real request-ID work (16 random
-bytes, hex-encoded into the header) instead of a literal string on the raw side.
+(`map[string]bool{"ok": true}`), the routed path and method, the `RequestCtx` itself — built
+once via fasthttp's own `RequestCtx.Init` before the timed loop starts, then reused every
+iteration with only `Response.Reset()`/`ResetUserValues()` clearing per-request state (on both
+sides) — the number of recovery layers (one each — `fiberadapter.New` already installs
+`recover.New()`, so the raw side adds its own to match rather than NestGo running two), and
+doing real request-ID work (16 random bytes, hex-encoded into the header) instead of a literal
+string on the raw side.
 
 **What still differs**, counted as NestGo's overhead by design: NestGo's per-handler safety
 wrapper and its `core.Context` adaptation over the native `fiber.Ctx`/`RequestCtx`; and in
